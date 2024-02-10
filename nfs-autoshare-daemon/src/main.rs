@@ -1,19 +1,27 @@
-use std::net::{UdpSocket, SocketAddr, TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::net::{UdpSocket, SocketAddr, TcpListener};
+use std::sync::RwLock;
 use std::thread;
 use std::time::{SystemTime, Duration};
 use std::io::{Read, Write};
 use std::collections::HashMap;
 use ipnetwork::{Ipv4Network, Ipv6Network};
+use once_cell::sync::Lazy;
 
 const CONFIG_BROADCAST_PORT: u16 = 5005;
 const CONFIG_BROADCAST_INTERFACE: &str = "0.0.0.0";
 const CONFIG_DEBUG_PRINTS: bool = true;
 
+static AVAILABLE_IMPORTS: Lazy<RwLock<HashMap<Export, SystemTime>>> = Lazy::new(|| {
+    let map = HashMap::new();
+    RwLock::new(map)
+});
+
+#[derive(PartialEq, Eq, Hash)]
 struct Export {
     address: String,
     mount_point: String,
 }
+
 
 fn broadcast_server(socket: &UdpSocket) {
     //set up the socket for broadcasting
@@ -21,7 +29,12 @@ fn broadcast_server(socket: &UdpSocket) {
     //read the export table
     let export_table = match std::fs::read_to_string("/var/lib/nfs/etab"){
         Ok(table) => table,
-        Err(_) => panic!("Failed to read export table"),
+        Err(_) => {
+            if CONFIG_DEBUG_PRINTS {
+                println!("Failed to read export table. No exports to broadcast.");
+            }
+            return
+        },
     };
 
     //send the export table to the broadcast address
@@ -72,16 +85,18 @@ fn broadcast_server(socket: &UdpSocket) {
     }
 }
 
-fn broadcast_client(socket: &UdpSocket){
+fn broadcast_client(socket: &UdpSocket, export_table: &RwLock<HashMap<Export, SystemTime>>){
     let mut data = [0; 1024];
     let (size, addr) = socket.recv_from(&mut data).expect("Didn't receive data");
     let maybe_export = String::from_utf8_lossy(&data[..size]);
     if CONFIG_DEBUG_PRINTS{
         print!("Received: {} from {}", maybe_export, addr);
     }
+    export_table.write().unwrap().insert(Export{address: addr.to_string(), mount_point: maybe_export.to_string()}, SystemTime::now());
+
 }
 
-fn config_server(){
+fn config_server(export_table: &RwLock<HashMap<Export, SystemTime>>){
     let listener = match TcpListener::bind("127.0.0.1:59576") {
         Ok(listener) => listener,
         Err(_) => panic!("Failed to bind config listener"),
@@ -96,21 +111,19 @@ fn config_server(){
         }
 
         let mut result = Vec::new();
-        let mut exports = config_socket_available_exports.lock().unwrap();
-        for (addr, mount_point, last_seen) in &*exports {
-            if SystemTime::now().duration_since(*last_seen).unwrap().as_secs() > 10 {
-                exports.retain(|(export_addr, _, _)| export_addr != addr);
-            } else {
-                result.push(format!("{}:{}", addr, mount_point));
-            }
-        }
+        let mut exports = export_table.write().unwrap();
+        exports.retain(|_, last_seen| {
+            SystemTime::now().duration_since(*last_seen).unwrap().as_secs() > 30
+        });
+        exports.keys().for_each(|export| {
+            result.push(format!("{}:{}", export.address, export.mount_point));
+        });
         let response = result.join("\n");
         stream.write(response.as_bytes()).unwrap();
     }
 }
 
 fn main() {
-    let available_imports: HashMap<Export, SystemTime> = HashMap::new();
     let addr = &format!("{}:{}", CONFIG_BROADCAST_INTERFACE, 0);
     let socket= UdpSocket::bind(addr).expect(&format!("Failed to bind broadcast socket to {}",addr));
 
@@ -124,13 +137,13 @@ fn main() {
     let server_recieve_socket = socket.try_clone().unwrap();
     let server_receive_thread = thread::spawn(move || {
         loop {
-            broadcast_client(&server_recieve_socket);
+            broadcast_client(&server_recieve_socket, &AVAILABLE_IMPORTS);
         }
     });
 
     let config_thread = thread::spawn(move || {
         loop{
-            config_server()
+            config_server(&AVAILABLE_IMPORTS)
         }
     });
 
