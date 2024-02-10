@@ -12,6 +12,10 @@ fn get_exports() -> Vec<String> {
 
 fn main() {
     let export_list = get_exports();
+    if export_list.is_empty() || export_list[0].is_empty() {
+        println!("No shares available");
+        std::process::exit(1);
+    }
     println!("Available shares:");
     for (i, export) in export_list.iter().enumerate() {
         let parts: Vec<&str> = export.split(":").collect();
