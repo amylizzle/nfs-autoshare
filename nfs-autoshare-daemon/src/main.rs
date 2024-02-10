@@ -11,10 +11,7 @@ const CONFIG_BROADCAST_PORT: u16 = 5005;
 const CONFIG_BROADCAST_INTERFACE: &str = "0.0.0.0";
 const CONFIG_DEBUG_PRINTS: bool = true;
 
-static AVAILABLE_IMPORTS: Lazy<RwLock<HashMap<Export, SystemTime>>> = Lazy::new(|| {
-    let map = HashMap::new();
-    RwLock::new(map)
-});
+static AVAILABLE_IMPORTS: Lazy<RwLock<HashMap<Export, SystemTime>>> = Lazy::new(RwLock::default);
 
 #[derive(PartialEq, Eq, Hash)]
 struct Export {
@@ -93,7 +90,6 @@ fn broadcast_client(socket: &UdpSocket, export_table: &RwLock<HashMap<Export, Sy
         print!("Received: {} from {}", maybe_export, addr);
     }
     export_table.write().unwrap().insert(Export{address: addr.to_string(), mount_point: maybe_export.to_string()}, SystemTime::now());
-
 }
 
 fn config_server(export_table: &RwLock<HashMap<Export, SystemTime>>){
@@ -113,7 +109,7 @@ fn config_server(export_table: &RwLock<HashMap<Export, SystemTime>>){
         let mut result = Vec::new();
         let mut exports = export_table.write().unwrap();
         exports.retain(|_, last_seen| {
-            SystemTime::now().duration_since(*last_seen).unwrap().as_secs() > 30
+            SystemTime::now().duration_since(*last_seen).unwrap().as_secs() < 30
         });
         exports.keys().for_each(|export| {
             result.push(format!("{}:{}", export.address, export.mount_point));
@@ -124,8 +120,9 @@ fn config_server(export_table: &RwLock<HashMap<Export, SystemTime>>){
 }
 
 fn main() {
-    let addr = &format!("{}:{}", CONFIG_BROADCAST_INTERFACE, 0);
+    let addr = &format!("{}:{}", CONFIG_BROADCAST_INTERFACE, CONFIG_BROADCAST_PORT);
     let socket= UdpSocket::bind(addr).expect(&format!("Failed to bind broadcast socket to {}",addr));
+    println!("Listening on {}", addr);
 
     let server_send_socket = socket.try_clone().unwrap();
     let server_send_thread = thread::spawn(move || {
@@ -133,7 +130,7 @@ fn main() {
             broadcast_server(&server_send_socket);
             thread::sleep(Duration::from_secs(10));
         }
-    });
+    }); 
     let server_recieve_socket = socket.try_clone().unwrap();
     let server_receive_thread = thread::spawn(move || {
         loop {
