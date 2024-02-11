@@ -130,17 +130,83 @@ fn config_server(export_table: &RwLock<HashMap<Export, SystemTime>>){
         if CONFIG_DEBUG_PRINTS {
             println!("config received: {:?}", data);
         }
+        let rawcommand = String::from_utf8_lossy(&data).to_string();
+        let command = rawcommand.trim_matches(char::from(0));
+        if command.starts_with("list") {
+            let mut result = Vec::new();
+            let mut exports = export_table.write().unwrap();
+            exports.retain(|_, last_seen| {
+                SystemTime::now().duration_since(*last_seen).unwrap().as_secs() < 30
+            });
+            exports.keys().for_each(|export| {
+                result.push(format!("{}:{}", export.address, export.mount_point));
+            });
+            let response = result.join("\n");
+            stream.write(response.as_bytes()).unwrap();
+        }
+        else if command.starts_with("mount") {
+            let parts: Vec<&str> = command.split_whitespace().collect();
+            if parts.len() != 4 {
+                stream.write(b"bad mount format").unwrap();
+                continue;
+            }
+            let export = Export {
+                address: parts[1].trim().to_string(),
+                mount_point: parts[2].trim().to_string(),
+            };
+            let client_mount_point = parts[3].trim();
 
-        let mut result = Vec::new();
-        let mut exports = export_table.write().unwrap();
-        exports.retain(|_, last_seen| {
-            SystemTime::now().duration_since(*last_seen).unwrap().as_secs() < 30
-        });
-        exports.keys().for_each(|export| {
-            result.push(format!("{}:{}", export.address, export.mount_point));
-        });
-        let response = result.join("\n");
-        stream.write(response.as_bytes()).unwrap();
+            let exports = export_table.read().unwrap();
+            if !exports.contains_key(&export) {
+                stream.write(b"invalid export").unwrap();
+                continue;
+            }
+            println!("{:x?}", client_mount_point);
+            let mkdir_result = std::process::Command::new("mkdir")
+                .arg("-p")
+                .arg(client_mount_point)
+                .status();
+            match mkdir_result {
+                Ok(mkdir_exit) => {
+                    if !mkdir_exit.success(){
+                        stream.write(b"failed to create mount point").unwrap();
+                        return;
+                    }
+                }
+                Err(e) => {
+                    stream.write(format!("failed to create mount point, internal error {}",e).as_bytes()).unwrap();
+                    return;
+                },
+            }
+    
+            
+
+            let nfs_result = std::process::Command::new("mount")
+                .arg("-t")
+                .arg("nfs")
+                .arg(format!("{}:{}", export.address, export.mount_point))
+                .arg(client_mount_point)
+                .status();
+            match nfs_result {
+                Ok(nfs_exit) => {
+                    if nfs_exit.success(){
+                        stream.write(b"mount successful").unwrap();
+                    }
+                    else {
+                        stream.write(b"mount failed").unwrap();
+                    }
+                }
+                Err(e) => {
+                    stream.write(format!("mount failed, internal error {}",e).as_bytes()).unwrap();
+                },
+            }
+            
+        }
+        else {
+            stream.write(b"invalid command").unwrap();
+        }
+
+
     }
 }
 
