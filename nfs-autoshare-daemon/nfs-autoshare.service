@@ -1,0 +1,8 @@
+[Unit]
+Description=NFS zero config daemon
+
+[Service]
+ExecStart=/usr/sbin/nfs-autoshare-daemon
+
+[Install]
+WantedBy=multi-user.target
