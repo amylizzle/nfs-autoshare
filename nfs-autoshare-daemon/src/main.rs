@@ -73,21 +73,39 @@ fn broadcast_server(socket: &UdpSocket) {
             }
         };
 
-        // Calculate the broadcast address
-        
+        //do a simple xor checksum on the mount name to verify the message
+        let mountbytes = mount_name.as_bytes();
+        let xorcheck = mountbytes.iter().fold(0, |acc, &ele| acc ^ ele);
+        //create a buffer with the mount name and the xor checksum
+        let mut buf = Vec::with_capacity(mountbytes.len() + 1);
+        buf.extend_from_slice(mountbytes);
+        buf.push(xorcheck);
+
         if CONFIG_DEBUG_PRINTS {
             println!("sending on {}", broadcast_addr);
         }
-        socket.send_to(mount_name.as_bytes(), broadcast_addr).unwrap();
+
+        socket.send_to(&buf, broadcast_addr).unwrap();
     }
 }
 
 fn broadcast_client(socket: &UdpSocket, export_table: &RwLock<HashMap<Export, SystemTime>>){
     let mut data = [0; 1024];
     let (size, addr) = socket.recv_from(&mut data).expect("Didn't receive data");
-    let maybe_export = String::from_utf8_lossy(&data[..size]);
+    if size < 2{
+        return; //invalid message, must be at least /+checksum byte
+    }
+    let maybe_export = String::from_utf8_lossy(&data[..size-1]);
     if CONFIG_DEBUG_PRINTS{
-        println!("Received: {} from {}", maybe_export, addr.ip());
+        println!("Received: {} from {} size:{}", maybe_export, addr.ip(),size);
+    }
+    //verify that the export is valid
+    let xorcheck = maybe_export.as_bytes().iter().fold(0, |acc, &ele| acc ^ ele);
+    if xorcheck != data[size-1]{
+        if CONFIG_DEBUG_PRINTS{
+            println!("Checksum failed {} != {}", xorcheck, data[size-1]);
+        }
+        return; //invalid message, checksum failed
     }
     export_table.write().unwrap().insert(Export{address: addr.ip().to_string(), mount_point: maybe_export.to_string()}, SystemTime::now());
 }
