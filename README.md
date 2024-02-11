@@ -24,8 +24,7 @@ Mounting /mnt/Storage on 192.168.200.7 to /media/192.168.200.7/mnt/Storage
 
 
 ## build instructions
-install cargo for your distribution
-for debian:
+install cargo for your distribution. For debian you'd do this:
 ```
 sudo apt install cargo
 ```
