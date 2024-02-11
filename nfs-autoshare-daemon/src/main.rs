@@ -1,4 +1,4 @@
-use std::net::{UdpSocket, SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, ToSocketAddrs, UdpSocket};
 use std::sync::RwLock;
 use std::thread;
 use std::time::{SystemTime, Duration};
@@ -67,7 +67,14 @@ fn broadcast_server(socket: &UdpSocket) {
                         }
                     }
                     Err(e) => {
-                        panic!("Failed to parse as IPv6 or IPv4: {}", e);
+                        match format!("{}:{}", mount_address, CONFIG_BROADCAST_PORT).to_socket_addrs() {
+                            Ok(mut parsed_addr) => {
+                                broadcast_addr = parsed_addr.next().unwrap();
+                            }
+                            Err(_) => {
+                                panic!("Failed to parse address: {}", e);
+                            }
+                        };
                     }
                 }
             }
