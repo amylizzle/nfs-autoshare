@@ -10,22 +10,8 @@ fn get_exports() -> Vec<String> {
     exports
 }
 
-fn try_mount(host: &str, share: &str, mount_point: &str) -> String {
-    let mut sock = TcpStream::connect("127.0.0.1:59576").expect("Failed to connect to server");
-    let command = format!("mount {} {} {}", host, share, mount_point);
-    sock.write(command.as_bytes()).expect("Failed to send data to server");
-    let mut data = String::new();
-    sock.read_to_string(&mut data).expect("Failed to receive data from server");
-    return data;
-}
-
 fn main() {
     let export_list = get_exports();
-    println!("{:?}", export_list);
-    if export_list[0] == "invalid command" {
-        println!("Failed to get exports");
-        std::process::exit(1);
-    }
     if export_list.is_empty() || export_list[0].is_empty() {
         println!("No shares available");
         std::process::exit(1);
@@ -66,6 +52,18 @@ fn main() {
     };
 
     println!("Mounting {} on {} to {}", share, host, mount_point);
-    let result = try_mount(host, share, &mount_point);
-    println!("{}", result);
+
+    let _ = std::process::Command::new("sudo")
+        .arg("mkdir")
+        .arg("-p")
+        .arg(&mount_point)
+        .status();
+    
+    let _ = std::process::Command::new("sudo")
+        .arg("mount")
+        .arg("-t")
+        .arg("nfs")
+        .arg(format!("{}:{}", host, share))
+        .arg(&mount_point)
+        .status();
 }
