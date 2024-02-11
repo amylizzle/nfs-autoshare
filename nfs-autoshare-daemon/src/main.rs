@@ -66,13 +66,13 @@ fn broadcast_server(socket: &UdpSocket) {
                             println!("Broadcast address (IPv6): {}", broadcast_address);
                         }
                     }
-                    Err(e) => {
+                    Err(_) => {
                         match format!("{}:{}", mount_address, CONFIG_BROADCAST_PORT).to_socket_addrs() {
                             Ok(mut parsed_addr) => {
                                 broadcast_addr = parsed_addr.next().unwrap();
                             }
                             Err(_) => {
-                                panic!("Failed to parse address: {}", e);
+                                panic!("Failed to parse address: {}", mount_address);
                             }
                         };
                     }
