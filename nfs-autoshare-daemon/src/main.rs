@@ -87,7 +87,7 @@ fn broadcast_client(socket: &UdpSocket, export_table: &RwLock<HashMap<Export, Sy
     let (size, addr) = socket.recv_from(&mut data).expect("Didn't receive data");
     let maybe_export = String::from_utf8_lossy(&data[..size]);
     if CONFIG_DEBUG_PRINTS{
-        print!("Received: {} from {}", maybe_export, addr.ip());
+        println!("Received: {} from {}", maybe_export, addr.ip());
     }
     export_table.write().unwrap().insert(Export{address: addr.ip().to_string(), mount_point: maybe_export.to_string()}, SystemTime::now());
 }
