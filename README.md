@@ -28,10 +28,16 @@ install cargo for your distribution. For debian you'd do this:
 ```
 sudo apt install cargo
 ```
-then clone the repo, change to the directory, and run the build script
+then clone the repo
 ```
 git clone https://github.com/amylizzle/nfs-autoshare.git
+```
+change to the directory
+```
 cd nfs-autoshare
+```
+and run the build script
+```
 ./build.sh
 ```
 finally, run the install script to add the binaries to sbin and set up the systemd service
