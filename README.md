@@ -12,7 +12,7 @@ run `nfs-autoshare-client` and follow the simple on-screen instructions.
 
 It should look like this: 
 ```
-you@your-pc:~/nfs-autoshare$ nfs-autoshare-client
+you@your-pc:~$ sudo nfs-autoshare-client
 Available shares:
 [0]: /mnt/Storage on 192.168.200.7
 Enter the number of the share you want to mount:
