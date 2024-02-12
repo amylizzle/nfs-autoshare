@@ -53,17 +53,42 @@ fn main() {
 
     println!("Mounting {} on {} to {}", share, host, mount_point);
 
-    let _ = std::process::Command::new("sudo")
-        .arg("mkdir")
-        .arg("-p")
-        .arg(&mount_point)
-        .status();
-    
-    let _ = std::process::Command::new("sudo")
-        .arg("mount")
+    let mkdir_result = std::process::Command::new("mkdir")
+    .arg("-p")
+    .arg(&mount_point)
+    .status();
+    match mkdir_result {
+        Ok(mkdir_exit) => {
+            if !mkdir_exit.success(){
+                println!("Failed to create mount point");
+                return;
+            }
+        }
+        Err(e) => {
+            println!("Failed to create mount point, internal error {}", e);
+            return;
+        },
+    }
+
+
+
+    let nfs_result = std::process::Command::new("mount")
         .arg("-t")
         .arg("nfs")
         .arg(format!("{}:{}", host, share))
         .arg(&mount_point)
         .status();
+    match nfs_result {
+        Ok(nfs_exit) => {
+            if nfs_exit.success(){
+                println!("Mount successful");
+            }
+            else {
+                println!("Mount failed");
+            }
+        }
+        Err(e) => {
+            println!("Mount failed, internal error {}",e);
+        },
+    }
 }
