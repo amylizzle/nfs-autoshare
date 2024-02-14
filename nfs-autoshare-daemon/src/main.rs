@@ -140,13 +140,13 @@ fn main() {
 
     // Browse for a service type.
     let service_type = "_nfs._tcp.local.";
-    //let receiver = mdns.browse(service_type).expect("Failed to browse");
+    let receiver = mdns.browse(service_type).expect("Failed to browse");
     
-    /*let recieve_thread = thread::spawn(move || {
+    let recieve_thread = thread::spawn(move || {
         loop {
             broadcast_client(&receiver);
         }
-    });*/
+    });
 
     let broadcast_thread = thread::spawn(move || {
         loop {
@@ -163,7 +163,7 @@ fn main() {
     });
 
 
-    //recieve_thread.join().unwrap();
+    recieve_thread.join().unwrap();
     broadcast_thread.join().unwrap();
     config_thread.join().unwrap();
 }
