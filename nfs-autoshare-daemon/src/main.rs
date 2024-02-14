@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use local_ip_address::list_afinet_netifas;
-use mdns_sd::{Receiver, ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{Receiver, ServiceDaemon, ServiceEvent, ServiceInfo, DaemonEvent};
 use gethostname::gethostname;
 
 const CONFIG_DEBUG_PRINTS: bool = true;
@@ -35,7 +35,7 @@ fn broadcast_server(mdns: &ServiceDaemon) {
 
     let network_interfaces = list_afinet_netifas().unwrap();
 
-    let host_name = gethostname().into_string().unwrap() + ".local.";
+    let host_name = gethostname().into_string().unwrap() + "._nfs._tcp.local.";
     let mut active_exports = HashMap::<String,bool>::new();
     //send the export table to the broadcast address
     for line in export_table.lines() {
@@ -53,12 +53,14 @@ fn broadcast_server(mdns: &ServiceDaemon) {
         let host_ips = network_interfaces.iter().filter(|(_,ip)| !ip.is_loopback()).map(|(_,ip)| ip.clone()).collect::<Vec<IpAddr>>();
         let service = ServiceInfo::new(
             "_nfs._tcp.local.",
-            &format!("{} on {}.", mount_name, host_name),
-            &host_name,
-            &host_ips[..],
+            &format!("{}_on_{}", mount_name, host_name),
+            &host_name, 
+            "",//empty, let auto assign
             2049,
-            &[("txt-record", format!("path={}",mount_name))][..],
-        ).unwrap();
+            &[("path",mount_name)][..],
+        )
+        .expect("Failed to create service - Invalid service info")
+        .enable_addr_auto();
         if CONFIG_DEBUG_PRINTS {
             println!("registering {:?}", service);
         }
@@ -73,34 +75,34 @@ fn broadcast_server(mdns: &ServiceDaemon) {
             mdns.unregister(&format!("{} on {}.", mount_name, host_name)).expect("Failed to unregister service");
         }
     }
+    println!("done!");
 }
 
 fn broadcast_client(receiver: &Receiver<ServiceEvent>){
-    while let Ok(event) = receiver.recv() {
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                println!("Resolved a new service: {}", info.get_fullname());
-                match info.get_property_val("txt-record"){
-                    Some(val) => {
-                        match val {
-                            Some (val) => {
-                                let mount_point = core::str::from_utf8(val).unwrap().split('=').last().unwrap();
-                                if CONFIG_DEBUG_PRINTS {
-                                    println!("new import {} on {}", mount_point, info.get_hostname());
-                                }
-                                AVAILABLE_IMPORTS.write().unwrap().insert(Export{address: info.get_hostname().to_string(), mount_point: mount_point.to_string()}, SystemTime::now());
+    println!("waiting for events");
+    while let Ok(event) = receiver.recv()  {
+        println!("got event {:?}", event);
+        if let ServiceEvent::ServiceResolved(info) = event {
+            println!("resolved {:?}", info);
+            match info.get_property_val("path"){
+                Some(val) => {
+                    match val {
+                        Some (val) => {
+                            let mount_point = core::str::from_utf8(val).unwrap();
+                            if CONFIG_DEBUG_PRINTS {
+                                println!("new import {} on {}", mount_point, info.get_hostname());
                             }
-                            None => {
-                                continue;
-                            }
+                            AVAILABLE_IMPORTS.write().unwrap().insert(Export{address: info.get_hostname().to_string(), mount_point: mount_point.to_string()}, SystemTime::now());
                         }
-                    },
-                    None => {
-                        continue;
+                        None => {
+                            return;
+                        }
                     }
-                }                
-            }
-            _ => {}
+                },
+                None => {
+                    return;
+                }
+            }     
         }
     }
 }
@@ -137,14 +139,14 @@ fn main() {
     let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 
     // Browse for a service type.
-    let service_type = "_nfs._tcp";
-    let receiver = mdns.browse(service_type).expect("Failed to browse");
+    let service_type = "_nfs._tcp.local.";
+    //let receiver = mdns.browse(service_type).expect("Failed to browse");
     
-    let recieve_thread = thread::spawn(move || {
+    /*let recieve_thread = thread::spawn(move || {
         loop {
             broadcast_client(&receiver);
         }
-    });
+    });*/
 
     let broadcast_thread = thread::spawn(move || {
         loop {
@@ -161,7 +163,7 @@ fn main() {
     });
 
 
-    recieve_thread.join().unwrap();
+    //recieve_thread.join().unwrap();
     broadcast_thread.join().unwrap();
     config_thread.join().unwrap();
 }
