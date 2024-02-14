@@ -1,17 +1,18 @@
-use std::net::{SocketAddr, TcpListener, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, TcpListener};
 use std::sync::RwLock;
 use std::thread;
-use std::time::{SystemTime, Duration};
+use std::time::SystemTime;
 use std::io::{Read, Write};
 use std::collections::HashMap;
-use ipnetwork::{Ipv4Network, Ipv6Network};
 use once_cell::sync::Lazy;
+use local_ip_address::list_afinet_netifas;
+use mdns_sd::{Receiver, ServiceDaemon, ServiceEvent, ServiceInfo};
+use gethostname::gethostname;
 
-const CONFIG_BROADCAST_PORT: u16 = 5005;
-const CONFIG_BROADCAST_INTERFACE: &str = "0.0.0.0";
 const CONFIG_DEBUG_PRINTS: bool = true;
 
 static AVAILABLE_IMPORTS: Lazy<RwLock<HashMap<Export, SystemTime>>> = Lazy::new(RwLock::default);
+static MY_EXPORTS: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(RwLock::default);
 
 #[derive(PartialEq, Eq, Hash)]
 struct Export {
@@ -20,9 +21,7 @@ struct Export {
 }
 
 
-fn broadcast_server(socket: &UdpSocket) {
-    //set up the socket for broadcasting
-    socket.set_broadcast(true).expect("set_broadcast call failed on broadcast_server thread");
+fn broadcast_server(mdns: &ServiceDaemon) {
     //read the export table
     let export_table = match std::fs::read_to_string("/var/lib/nfs/etab"){
         Ok(table) => table,
@@ -34,6 +33,10 @@ fn broadcast_server(socket: &UdpSocket) {
         },
     };
 
+    let network_interfaces = list_afinet_netifas().unwrap();
+
+    let host_name = gethostname().into_string().unwrap() + ".local.";
+    let mut active_exports = HashMap::<String,bool>::new();
     //send the export table to the broadcast address
     for line in export_table.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
@@ -42,82 +45,67 @@ fn broadcast_server(socket: &UdpSocket) {
         if CONFIG_DEBUG_PRINTS {
             println!("exporting {} to {}", mount_name, mount_address);
         }
-        // Calculate the broadcast address
-        let broadcast_addr;
-        match mount_address.parse::<Ipv4Network>() {
-            Ok(ipv4_range) => {
-                // Calculate broadcast address for IPv4
-                let broadcast_address = ipv4_range.broadcast();
-                //create addr from broadcast address and port
-                broadcast_addr = SocketAddr::new(std::net::IpAddr::V4(broadcast_address), CONFIG_BROADCAST_PORT);
-                if CONFIG_DEBUG_PRINTS {
-                    println!("Broadcast address (IPv4): {}", broadcast_address);
-                }
-            }
-            Err(_) => {
-                // Parsing as IPv4 failed, attempt parsing as IPv6
-                match mount_address.parse::<Ipv6Network>() {
-                    Ok(ipv6_range) => {
-                        // Calculate broadcast address for IPv6
-                        let broadcast_address = ipv6_range.broadcast();
-                        //create addr from broadcast address and port
-                        broadcast_addr = SocketAddr::new(std::net::IpAddr::V6(broadcast_address), CONFIG_BROADCAST_PORT);
-                        if CONFIG_DEBUG_PRINTS {
-                            println!("Broadcast address (IPv6): {}", broadcast_address);
-                        }
-                    }
-                    Err(_) => {
-                        match format!("{}:{}", mount_address, CONFIG_BROADCAST_PORT).to_socket_addrs() {
-                            Ok(mut parsed_addr) => {
-                                broadcast_addr = parsed_addr.next().unwrap();
-                            }
-                            Err(_) => {
-                                panic!("Failed to parse address: {}", mount_address);
-                            }
-                        };
-                    }
-                }
-            }
-        };
-
-        //do a simple xor checksum on the mount name to verify the message
-        let mountbytes = mount_name.as_bytes();
-        let xorcheck = mountbytes.iter().fold(0, |acc, &ele| acc ^ ele);
-        //create a buffer with the mount name and the xor checksum
-        let mut buf = Vec::with_capacity(mountbytes.len() + 1);
-        buf.extend_from_slice(mountbytes);
-        buf.push(xorcheck);
-
+        active_exports.insert(mount_name.to_string(),true);
+        if MY_EXPORTS.read().unwrap().contains_key(mount_name) {
+            continue; //already registered, don't need it again
+        }
+        MY_EXPORTS.write().unwrap().insert(mount_name.to_string(), mount_address.to_string());
+        let host_ips = network_interfaces.iter().filter(|(_,ip)| !ip.is_loopback()).map(|(_,ip)| ip.clone()).collect::<Vec<IpAddr>>();
+        let service = ServiceInfo::new(
+            "_nfs._tcp.local.",
+            &format!("{} on {}.", mount_name, host_name),
+            &host_name,
+            &host_ips[..],
+            2049,
+            &[("txt-record", format!("path={}",mount_name))][..],
+        ).unwrap();
         if CONFIG_DEBUG_PRINTS {
-            println!("sending on {}", broadcast_addr);
+            println!("registering {:?}", service);
         }
-
-        socket.send_to(&buf, broadcast_addr).unwrap();
+        mdns.register(service).expect("Failed to register service");
+    }
+    for (mount_name,_) in MY_EXPORTS.read().unwrap().iter() {
+        if !active_exports.contains_key(mount_name) {
+            if CONFIG_DEBUG_PRINTS {
+                println!("unregistering {}", mount_name);
+            }
+            MY_EXPORTS.write().unwrap().remove(mount_name);
+            mdns.unregister(&format!("{} on {}.", mount_name, host_name)).expect("Failed to unregister service");
+        }
     }
 }
 
-fn broadcast_client(socket: &UdpSocket, export_table: &RwLock<HashMap<Export, SystemTime>>){
-    let mut data = [0; 1024];
-    let (size, addr) = socket.recv_from(&mut data).expect("Didn't receive data");
-    if size < 2{
-        return; //invalid message, must be at least /+checksum byte
-    }
-    let maybe_export = String::from_utf8_lossy(&data[..size-1]);
-    if CONFIG_DEBUG_PRINTS{
-        println!("Received: {} from {} size:{}", maybe_export, addr.ip(),size);
-    }
-    //verify that the export is valid
-    let xorcheck = maybe_export.as_bytes().iter().fold(0, |acc, &ele| acc ^ ele);
-    if xorcheck != data[size-1]{
-        if CONFIG_DEBUG_PRINTS{
-            println!("Checksum failed {} != {}", xorcheck, data[size-1]);
+fn broadcast_client(receiver: &Receiver<ServiceEvent>){
+    while let Ok(event) = receiver.recv() {
+        match event {
+            ServiceEvent::ServiceResolved(info) => {
+                println!("Resolved a new service: {}", info.get_fullname());
+                match info.get_property_val("txt-record"){
+                    Some(val) => {
+                        match val {
+                            Some (val) => {
+                                let mount_point = core::str::from_utf8(val).unwrap().split('=').last().unwrap();
+                                if CONFIG_DEBUG_PRINTS {
+                                    println!("new import {} on {}", mount_point, info.get_hostname());
+                                }
+                                AVAILABLE_IMPORTS.write().unwrap().insert(Export{address: info.get_hostname().to_string(), mount_point: mount_point.to_string()}, SystemTime::now());
+                            }
+                            None => {
+                                continue;
+                            }
+                        }
+                    },
+                    None => {
+                        continue;
+                    }
+                }                
+            }
+            _ => {}
         }
-        return; //invalid message, checksum failed
     }
-    export_table.write().unwrap().insert(Export{address: addr.ip().to_string(), mount_point: maybe_export.to_string()}, SystemTime::now());
 }
 
-fn config_server(export_table: &RwLock<HashMap<Export, SystemTime>>){
+fn config_server(){
     let listener = match TcpListener::bind("127.0.0.1:59576") {
         Ok(listener) => listener,
         Err(_) => panic!("Failed to bind config listener"),
@@ -132,45 +120,49 @@ fn config_server(export_table: &RwLock<HashMap<Export, SystemTime>>){
         }
 
         let mut result = Vec::new();
-        let mut exports = export_table.write().unwrap();
+        let mut exports = AVAILABLE_IMPORTS.write().unwrap();
         exports.retain(|_, last_seen| {
             SystemTime::now().duration_since(*last_seen).unwrap().as_secs() < 30
         });
         exports.keys().for_each(|export| {
             result.push(format!("{}:{}", export.address, export.mount_point));
         });
+        
         let response = result.join("\n");
         stream.write(response.as_bytes()).unwrap();
     }
 }
 
 fn main() {
-    let addr = &format!("{}:{}", CONFIG_BROADCAST_INTERFACE, CONFIG_BROADCAST_PORT);
-    let socket= UdpSocket::bind(addr).expect(&format!("Failed to bind broadcast socket to {}",addr));
-    println!("Listening on {}", addr);
+    let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 
-    let server_send_socket = socket.try_clone().unwrap();
-    let server_send_thread = thread::spawn(move || {
+    // Browse for a service type.
+    let service_type = "_nfs._tcp";
+    let receiver = mdns.browse(service_type).expect("Failed to browse");
+    
+    let recieve_thread = thread::spawn(move || {
         loop {
-            broadcast_server(&server_send_socket);
-            thread::sleep(Duration::from_secs(10));
-        }
-    }); 
-    let server_recieve_socket = socket.try_clone().unwrap();
-    let server_receive_thread = thread::spawn(move || {
-        loop {
-            broadcast_client(&server_recieve_socket, &AVAILABLE_IMPORTS);
+            broadcast_client(&receiver);
         }
     });
+
+    let broadcast_thread = thread::spawn(move || {
+        loop {
+            broadcast_server(&mdns);
+            thread::sleep(std::time::Duration::from_secs(5));
+        }
+    });
+
 
     let config_thread = thread::spawn(move || {
         loop{
-            config_server(&AVAILABLE_IMPORTS)
+            config_server()
         }
     });
 
-    server_send_thread.join().unwrap();
-    server_receive_thread.join().unwrap();
+
+    recieve_thread.join().unwrap();
+    broadcast_thread.join().unwrap();
     config_thread.join().unwrap();
 }
 
