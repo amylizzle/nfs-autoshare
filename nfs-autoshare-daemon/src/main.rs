@@ -35,7 +35,7 @@ fn broadcast_server(mdns: &ServiceDaemon) {
 
     let network_interfaces = list_afinet_netifas().unwrap();
 
-    let host_name = gethostname().into_string().unwrap();// + "._nfs._tcp.local.";
+    let host_name = gethostname().into_string().unwrap();
     let mut active_exports = HashMap::<String,bool>::new();
     //send the export table to the broadcast address
     for line in export_table.lines() {
