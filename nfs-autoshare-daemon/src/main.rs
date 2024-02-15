@@ -10,6 +10,7 @@ use mdns_sd::{Receiver, ServiceDaemon, ServiceEvent, ServiceInfo, DaemonEvent};
 use gethostname::gethostname;
 
 const CONFIG_DEBUG_PRINTS: bool = true;
+const SERVICE_TYPE: &str = "_nfs._tcp.local.";
 
 static AVAILABLE_IMPORTS: Lazy<RwLock<HashMap<Export, SystemTime>>> = Lazy::new(RwLock::default);
 static MY_EXPORTS: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(RwLock::default);
@@ -35,7 +36,7 @@ fn broadcast_server(mdns: &ServiceDaemon) {
 
     let network_interfaces = list_afinet_netifas().unwrap();
 
-    let host_name = gethostname().into_string().unwrap();
+    let host_name = gethostname().into_string().unwrap()+".local";
     let mut active_exports = HashMap::<String,bool>::new();
     //send the export table to the broadcast address
     for line in export_table.lines() {
@@ -52,7 +53,7 @@ fn broadcast_server(mdns: &ServiceDaemon) {
         MY_EXPORTS.write().unwrap().insert(mount_name.to_string(), mount_address.to_string());
         let host_ips = network_interfaces.iter().filter(|(_,ip)| !ip.is_loopback()).map(|(_,ip)| ip.clone()).collect::<Vec<IpAddr>>();
         let service = ServiceInfo::new(
-            "_nfs._tcp.local.",
+            SERVICE_TYPE,
             &format!("{} on {}", mount_name, host_name),
             &host_name, 
             "",//empty, let auto assign
@@ -66,21 +67,26 @@ fn broadcast_server(mdns: &ServiceDaemon) {
         }
         mdns.register(service).expect("Failed to register service");
     }
+    let mut to_remove = Vec::<String>::new();
     for (mount_name,_) in MY_EXPORTS.read().unwrap().iter() {
         if !active_exports.contains_key(mount_name) {
             if CONFIG_DEBUG_PRINTS {
                 println!("unregistering {}", mount_name);
             }
-            MY_EXPORTS.write().unwrap().remove(mount_name);
+            to_remove.push(mount_name.to_string());            
             mdns.unregister(&format!("{} on {}.", mount_name, host_name)).expect("Failed to unregister service");
         }
+    }
+    for mount_name in to_remove {
+        MY_EXPORTS.write().unwrap().remove(&mount_name);
     }
     println!("done!");
 }
 
-fn broadcast_client(receiver: &Receiver<ServiceEvent>){
+fn broadcast_client(mdns: &ServiceDaemon){
+    let receiver = mdns.browse(SERVICE_TYPE).expect("Failed to browse");
     println!("waiting for events");
-    while let Ok(event) = receiver.recv()  {
+    while let Ok(event) = receiver.recv_timeout(std::time::Duration::from_secs(5)) {
         println!("got event {:?}", event);
         if let ServiceEvent::ServiceResolved(info) = event {
             println!("resolved {:?}", info);
@@ -137,14 +143,11 @@ fn config_server(){
 
 fn main() {
     let mdns = ServiceDaemon::new().expect("Failed to create daemon");
-
-    // Browse for a service type.
-    let service_type = "_nfs._tcp.local.";
-    let receiver = mdns.browse(service_type).expect("Failed to browse");
-    
+    let client_mdns = mdns.clone();
+   
     let recieve_thread = thread::spawn(move || {
         loop {
-            broadcast_client(&receiver);
+            broadcast_client(&client_mdns);
         }
     });
 
