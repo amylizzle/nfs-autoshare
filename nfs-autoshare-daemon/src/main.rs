@@ -95,10 +95,11 @@ fn broadcast_client(mdns: &ServiceDaemon){
                     match val {
                         Some (val) => {
                             let mount_point = core::str::from_utf8(val).unwrap();
-                            if CONFIG_DEBUG_PRINTS {
+                            let new_export = Export{address: info.get_hostname().to_string(), mount_point: mount_point.to_string()};
+                            if CONFIG_DEBUG_PRINTS && !AVAILABLE_IMPORTS.read().unwrap().contains_key(&new_export){
                                 println!("new import {} on {}", mount_point, info.get_hostname());
                             }
-                            AVAILABLE_IMPORTS.write().unwrap().insert(Export{address: info.get_hostname().to_string(), mount_point: mount_point.to_string()}, SystemTime::now());
+                            AVAILABLE_IMPORTS.write().unwrap().insert(new_export, SystemTime::now());
                         }
                         None => {
                             return;
